@@ -19,23 +19,37 @@
 #define FPS 30 // frames per second
 #define CHECK_PLAYER_TIME 10 // in seconds
 
+#define SERVER_URL "http://127.0.0.1:8000"
+#define AUTH_URL "/api-token-auth/"
+#define GAME_SESSION_URL "/game-session/"
+
+// temporary robot username and password
+#define USERNAME "abc"
+#define PASSWORD "abc"
+
 DEFINE_LOG_CATEGORY(ModuleLog)
 
 void CStreamingPluginModule::StartupModule()
-{	
+{
 	// timer to capture frames
 	FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &CStreamingPluginModule::CaptureFrame), 1.0 / FPS);
+
 	// timer to check player join/quit
 	FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &CStreamingPluginModule::CheckPlayers), CHECK_PLAYER_TIME);
+
+	// init class variables
+	AuthToken = "";
 }
+
 
 void CStreamingPluginModule::ShutdownModule()
 {
 	// This function may be called during shutdown to clean up your module.  For modules that support dynamic reloading,
 	// we call this function before unloading the module.
-	
-	
+
+
 }
+
 
 // call this for each player join
 void CStreamingPluginModule::SetUpPlayer(int ControllerId) {
@@ -43,7 +57,7 @@ void CStreamingPluginModule::SetUpPlayer(int ControllerId) {
 	// encode and write players' frames to http stream
 	std::stringstream *StringStream = new std::stringstream();
 	// Need to replace the http ip with actual address when running Unreal Engine
-	*StringStream << "ffmpeg -y " << " -f rawvideo -pix_fmt rgba -s " << halfSizeX << "x" << halfSizeY << " -r " << FPS << " -i - -listen 1 -c:v libx264 -preset slow -f avi -an -tune zerolatency http://192.168.1.78:" << BASE_PORT_NUM + ControllerId << " 2> out" << ControllerId << ".txt";
+	*StringStream << "ffmpeg -y " << " -f rawvideo -pix_fmt rgba -s " << halfSizeX << "x" << halfSizeY << " -r " << FPS << " -i - -listen 1 -c:v libx264 -preset slow -f avi -an -tune zerolatency http://192.168.1.27:" << BASE_PORT_NUM + ControllerId << " 2> out" << ControllerId << ".txt";
 	UE_LOG(ModuleLog, Warning, TEXT("stream started"));
 	VideoPipeList.Add(_popen(StringStream->str().c_str(), "wb"));
 
@@ -87,7 +101,7 @@ bool CStreamingPluginModule::CaptureFrame(float DeltaTime) {
 		SetUpVideoCapture();
 		NumberOfPlayers = 1;
 		SetUpPlayer(0);
-		
+
 
 	}
 
@@ -151,150 +165,128 @@ void CStreamingPluginModule::Split4Player() {
 
 }
 
-// check with server if any players joined/quit
-bool CStreamingPluginModule::CheckPlayers(float DeltaTime)
+bool CStreamingPluginModule::GetToken()
 {
-	if (GEngine->GameViewport != nullptr && GIsRunning && IsInGameThread())
-	{
-		UE_LOG(ModuleLog, Warning, TEXT("Checking players"));
-		FString Username = "abc";
-		FString Password = "abc";
-		bool RequestSuccess = false;
-		FString BaseUrl = "http://127.0.0.1:8000";
-		FString AuthUrl = "/api-token-auth/";
+	FString Url = SERVER_URL AUTH_URL;
+	FString ContentString;
 
-		FString Url = BaseUrl + AuthUrl; // "http://127.0.0.1:8000/api-token-auth/";
-		FString ContentString;
+	TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject());
+	JsonObject->SetStringField(TEXT("username"), USERNAME);
+	JsonObject->SetStringField(TEXT("password"), PASSWORD);
 
-		TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject());
-		JsonObject->SetStringField(TEXT("username"), Username);
-		JsonObject->SetStringField(TEXT("password"), Password);
+	TSharedRef<TJsonWriter<TCHAR>> JsonWriter = TJsonWriterFactory<>::Create(&ContentString);
+	FJsonSerializer::Serialize(JsonObject.ToSharedRef(), JsonWriter);
 
-		TSharedRef<TJsonWriter<TCHAR>> JsonWriter = TJsonWriterFactory<>::Create(&ContentString);
-		FJsonSerializer::Serialize(JsonObject.ToSharedRef(), JsonWriter);
+	TSharedRef<IHttpRequest> HttpRequest = FHttpModule::Get().CreateRequest();
+	HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+	HttpRequest->SetURL(Url);
+	HttpRequest->SetVerb(TEXT("POST"));
+	HttpRequest->SetContentAsString(ContentString);
+	HttpRequest->OnProcessRequestComplete().BindRaw(this, &CStreamingPluginModule::OnAuthResponseComplete);
 
-		TSharedRef<IHttpRequest> HttpRequest = FHttpModule::Get().CreateRequest();
-		HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
-		HttpRequest->SetURL(Url);
-		HttpRequest->SetVerb(TEXT("POST"));
-		HttpRequest->SetContentAsString(ContentString);
-		HttpRequest->OnProcessRequestComplete().BindRaw(this, &CStreamingPluginModule::OnAuthResponseComplete);
-		RequestSuccess = HttpRequest->ProcessRequest();
-
-		UE_LOG(ModuleLog, Warning, TEXT("URL = %s"), *Url);
-		UE_LOG(ModuleLog, Warning, TEXT("ContentString = %s"), *ContentString);
-	}
-	//return RequestSuccess;
-	return true;
+	return HttpRequest->ProcessRequest(); // returns boolean: successful or not
+	
 }
 
 void CStreamingPluginModule::OnAuthResponseComplete(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
 {
-	
-	FString Token;
 	if (bWasSuccessful)
 	{
-		FString MessageBody;
-		
-
 		UE_LOG(ModuleLog, Warning, TEXT("Response Code = %d"), Response->GetResponseCode());
 
-		if (!Response.IsValid())
+		if ((Response.IsValid()) && EHttpResponseCodes::IsOk(Response->GetResponseCode()))
 		{
-			MessageBody = "{\"success\":\"Error: Unable to process HTTP Request!\"}";
-			GEngine->AddOnScreenDebugMessage(1, 5.0f, FColor::Green, TEXT("Request failed!"));
-
-			UE_LOG(ModuleLog, Warning, TEXT("Request failed!"));
-		}
-		else if (EHttpResponseCodes::IsOk(Response->GetResponseCode()))
-		{
-			//MessageBody = Response->GetContentAsString();
-			//GEngine->AddOnScreenDebugMessage(1, 5.0f, FColor::Green, TEXT("Request success!"));
-
 			TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject());
 			TSharedRef<TJsonReader<TCHAR>> JsonReader = TJsonReaderFactory<TCHAR>::Create(Response->GetContentAsString());
 			FJsonSerializer::Deserialize(JsonReader, JsonObject);
 
-			Token = JsonObject->GetStringField("token");
+			AuthToken = JsonObject->GetStringField("token");
 
-			UE_LOG(ModuleLog, Warning, TEXT("Token = %s"), *Token);
-
-			// get controller info from server
-			FString Url = "http://127.0.0.1:8000/game-session/";
-
-			TSharedRef<IHttpRequest> HttpRequest = FHttpModule::Get().CreateRequest();
-			Token = "Token " + Token;
-			HttpRequest->SetHeader(TEXT("Authorization"), Token);
-			HttpRequest->SetURL(Url);
-			HttpRequest->SetVerb(TEXT("GET"));
-			HttpRequest->OnProcessRequestComplete().BindRaw(this, &CStreamingPluginModule::OnGetResponseComplete);
-			bool RequestSuccess = HttpRequest->ProcessRequest();
-
-			UE_LOG(ModuleLog, Warning, TEXT("URL = %s"), *Url);
+			UE_LOG(ModuleLog, Warning, TEXT("Token = %s"), *AuthToken);
 
 		}
 		else
 		{
-			GEngine->AddOnScreenDebugMessage(1, 5.0f, FColor::Green, TEXT("Request error!"));
-			MessageBody = FString::Printf(TEXT("{\"success\":\"HTTP Error: %d\"}"), Response->GetResponseCode());
+			UE_LOG(ModuleLog, Warning, TEXT("Request failed! Response invalid"));
 		}
 	}
 	else
 	{
 		UE_LOG(ModuleLog, Warning, TEXT("Request failed! Is the server up?"));
 	}
-	
+
 }
+
+// check with server if any players joined/quit
+bool CStreamingPluginModule::CheckPlayers(float DeltaTime)
+{
+
+	if (GEngine->GameViewport != nullptr && GIsRunning && IsInGameThread() && GetToken())
+	{
+		UE_LOG(ModuleLog, Warning, TEXT("Checking players"));
+
+		// get controller info from server
+		FString Url = SERVER_URL GAME_SESSION_URL;
+
+		TSharedRef<IHttpRequest> HttpRequest = FHttpModule::Get().CreateRequest();
+		AuthToken = "Token " + AuthToken;
+		HttpRequest->SetHeader(TEXT("Authorization"), AuthToken);
+		HttpRequest->SetURL(Url);
+		HttpRequest->SetVerb(TEXT("GET"));
+		HttpRequest->OnProcessRequestComplete().BindRaw(this, &CStreamingPluginModule::OnGetResponseComplete);
+		bool RequestSuccess = HttpRequest->ProcessRequest();
+
+		UE_LOG(ModuleLog, Warning, TEXT("URL = %s"), *Url);
+	}
+
+	return true;
+}
+
 
 void CStreamingPluginModule::OnGetResponseComplete(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
 {
 
-	FString Token;
 	if (bWasSuccessful)
 	{
-		FString MessageBody;
-
 
 		UE_LOG(ModuleLog, Warning, TEXT("Response Code = %d"), Response->GetResponseCode());
 
 		if (!Response.IsValid())
 		{
-			MessageBody = "{\"success\":\"Error: Unable to process HTTP Request!\"}";
-			GEngine->AddOnScreenDebugMessage(1, 5.0f, FColor::Green, TEXT("Request failed!"));
-
 			UE_LOG(ModuleLog, Warning, TEXT("Request failed!"));
 		}
 		else if (EHttpResponseCodes::IsOk(Response->GetResponseCode()))
 		{
-			//MessageBody = Response->GetContentAsString();
-			//GEngine->AddOnScreenDebugMessage(1, 5.0f, FColor::Green, TEXT("Request success!"));
-
 			TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject());
-			
+
 			// split json array elements
 			FString JsonString = Response->GetContentAsString();
 			TArray<FString> JsonElementList;
-			JsonString = JsonString.Replace(TEXT("["),TEXT(""));
+			JsonString = JsonString.Replace(TEXT("["), TEXT(""));
 			JsonString = JsonString.Replace(TEXT("]"), TEXT(""));
 			JsonString.ParseIntoArray(JsonElementList, TEXT("},"), 1);
 
 			// update controller and streaming port info
 			TArray<int> NewActivePlayers;
-			if (NumberOfPlayers != JsonElementList.Num()) 
+			if (NumberOfPlayers != JsonElementList.Num())
 			{
 				NumberOfPlayers = JsonElementList.Num();
-				for (int i = 0; i < JsonElementList.Num(); i++) 
+				for (int i = 0; i < JsonElementList.Num(); i++)
 				{
-					if (i < JsonElementList.Num() - 1) 
+					if (i < JsonElementList.Num() - 1)
 					{
 						JsonElementList[i] = JsonElementList[i] + "}";
 					}
+		
 					//UE_LOG(ModuleLog, Warning, TEXT("element = %s"), *JsonElementList[i]);
+					
 					TSharedRef<TJsonReader<TCHAR>> JsonReader = TJsonReaderFactory<TCHAR>::Create(JsonElementList[i]);
 					FJsonSerializer::Deserialize(JsonReader, JsonObject);
 					int32 ControllerId = JsonObject->GetIntegerField("controller");
 					int32 StreamingPort = JsonObject->GetIntegerField("streaming_port");
+					
 					//UE_LOG(ModuleLog, Warning, TEXT("controller id = %d, streaming port = %d"), ControllerId, StreamingPort);
+					
 					// check for player join
 					if (!PlayerFrameMapping.Contains(ControllerId)) // new player
 					{
@@ -304,7 +296,7 @@ void CStreamingPluginModule::OnGetResponseComplete(FHttpRequestPtr Request, FHtt
 					NewActivePlayers.Add(ControllerId);
 				}
 				// check for any player quit
-				for (int i = 0; i < PlayerFrameMapping.Num(); i++) 
+				for (int i = 0; i < PlayerFrameMapping.Num(); i++)
 				{
 					int32 ControllerId = PlayerFrameMapping[i];
 					if (!NewActivePlayers.Contains(ControllerId)) // player quit
@@ -317,20 +309,11 @@ void CStreamingPluginModule::OnGetResponseComplete(FHttpRequestPtr Request, FHtt
 						VideoPipeList.RemoveAt(PipeIndex);
 					}
 				}
-				
 			}
-			
-			
-			// all obj
-			FString test = Response->GetContentAsString();
-			UE_LOG(ModuleLog, Warning, TEXT("obj = %s"), *test);
-			
-			//UE_LOG(ModuleLog, Warning, TEXT("controller = %d, streaming port = %d"), GameSessionList[0].controller, GameSessionList[0].streaming_port);
 		}
 		else
 		{
-			GEngine->AddOnScreenDebugMessage(1, 5.0f, FColor::Green, TEXT("Request error!"));
-			MessageBody = FString::Printf(TEXT("{\"success\":\"HTTP Error: %d\"}"), Response->GetResponseCode());
+			UE_LOG(ModuleLog, Warning, TEXT("Request failed! Response invalid"));
 		}
 	}
 	else
@@ -341,5 +324,5 @@ void CStreamingPluginModule::OnGetResponseComplete(FHttpRequestPtr Request, FHtt
 }
 
 #undef LOCTEXT_NAMESPACE
-	
+
 IMPLEMENT_MODULE(CStreamingPluginModule, StreamingPlugin)

@@ -29,12 +29,13 @@ public:
 	bool CStreamingPluginModule::CheckPlayers(float DeltaTime);
 	void CStreamingPluginModule::OnAuthResponseComplete(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
 	void CStreamingPluginModule::OnGetResponseComplete(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
-	
+	bool CStreamingPluginModule::GetToken();
+
 	// Timer for capturing frames
 	bool CStreamingPluginModule::CaptureFrame(float DeltaTime);
 
 	/** Class variables **/
-	
+
 	int NumberOfPlayers;
 	TArray<FILE*> VideoPipeList;
 	TArray<TArray<FColor> > FrameBufferList;
@@ -43,6 +44,7 @@ public:
 	TArray<int> PlayerFrameMapping; // index is frame index, value is player index
 	FIntRect Screen1, Screen2, Screen3, Screen4;
 	FReadSurfaceDataFlags flags;
-	
-	
+	FString AuthToken;
+
+
 };
